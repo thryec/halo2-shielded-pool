@@ -1,0 +1,9 @@
+[package]
+name = "halo2-shielded-pool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0" }
+ff = "0.13"
+halo2_poseidon = { git = "https://github.com/privacy-ethereum/poseidon-gadget", rev = "2478c86285a25c27ee75fd3a000f84b70a8ad231" }
