@@ -30,8 +30,4 @@ Three layers:
 cargo test
 ```
 
-MockProver-based tests throughout v1–v2; real proof generation and foundry tests arrive in v3.
 
-## Status
-
-Pre-v0. Scaffold only.
