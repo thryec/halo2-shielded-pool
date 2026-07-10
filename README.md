@@ -6,8 +6,8 @@ A Tornado-style shielded pool in halo2 (PSE fork). Deposit a note, withdraw it l
 
 Three layers:
 
-- `src/primitives.rs` — plain-Rust domain logic: notes, Poseidon commitments, nullifier hashes, incremental Merkle tree. No circuit code. Everything the circuits prove is computed and tested here first.
-- Circuits — Merkle inclusion chip, commitment and nullifier sub-circuits, composed into a withdraw circuit. Public inputs: root and nullifier hash.
+- `src/primitives/` — plain-Rust domain logic: notes, Poseidon commitments, nullifier hashes, incremental Merkle tree. No circuit code. Everything the circuits prove is computed and tested here first.
+- `src/circuits/` — Merkle inclusion chip, commitment and nullifier sub-circuits, composed into a withdraw circuit. Public inputs: root and nullifier hash.
 - Contracts (final stage) — generated Solidity verifier plus a minimal pool contract: on-chain commitment tree, nullifier set, recent-root history.
 
 ## Build stages
@@ -26,8 +26,6 @@ Three layers:
 
 ## Build & test
 
-```
+```sh
 cargo test
 ```
-
-
