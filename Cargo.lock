@@ -185,7 +185,6 @@ dependencies = [
 name = "halo2-shielded-pool"
 version = "0.1.0"
 dependencies = [
- "ff",
  "halo2_poseidon",
  "halo2_proofs",
 ]
