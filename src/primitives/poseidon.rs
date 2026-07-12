@@ -6,7 +6,11 @@ use crate::Fp;
 
 pub const MESSAGE_LEN: usize = 2;
 
-/// Computes either one or two-input Poseidon hash outside the circuit.
+/// Computes a Poseidon hash outside the circuit.
+///
+/// `L` is fixed at compile time by the `[Fp; L]` input. `ConstantLength<L>`
+/// includes that length in Poseidon's domain, so different input lengths are
+/// domain-separated even when their padded states would otherwise match.
 pub fn poseidon_hash<const L: usize>(message: [Fp; L]) -> Fp {
     NativePoseidonHash::<Fp, P128Pow5T3, ConstantLength<L>, 3, 2>::init().hash(message)
 }
@@ -20,6 +24,17 @@ mod tests {
         let message = [Fp::from(1), Fp::from(2)];
 
         assert_eq!(poseidon_hash(message), poseidon_hash(message));
+    }
+
+    #[test]
+    fn different_lengths_produce_different_hashes() {
+        let message1 = [Fp::from(1)];
+        let message2 = [Fp::from(1), Fp::from(2)];
+
+        let hash1 = poseidon_hash(message1);
+        let hash2 = poseidon_hash(message2);
+
+        assert_ne!(hash1, hash2);
     }
 
     #[test]
