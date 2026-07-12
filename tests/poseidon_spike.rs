@@ -1,42 +1,41 @@
 use halo2_poseidon::poseidon::{
-    Hash as CircuitPoseidonHash, Pow5Chip, Pow5Config,
     primitives::{ConstantLength, P128Pow5T3},
+    Hash as CircuitPoseidonHash, Pow5Chip, Pow5Config,
 };
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
 };
 
-use halo2_shielded_pool::{Fp, poseidon_hash};
+use halo2_shielded_pool::{poseidon_hash, Fp};
 
 const WIDTH: usize = 3;
 const RATE: usize = 2;
-const MESSAGE_LEN: usize = 2;
 
 /// Configuration shared by every [`PoseidonCircuit`] witness.
 #[derive(Clone, Debug)]
-pub struct PoseidonConfig {
-    input: [Column<Advice>; MESSAGE_LEN],
+pub struct PoseidonConfig<const L: usize> {
+    input: [Column<Advice>; L],
     output: Column<Instance>,
     poseidon: Pow5Config<Fp, WIDTH, RATE>,
 }
 
 /// Proves that a public digest is the Poseidon hash of two private field elements.
 #[derive(Clone, Debug)]
-pub struct PoseidonCircuit {
-    message: Value<[Fp; MESSAGE_LEN]>,
+pub struct PoseidonCircuit<const L: usize> {
+    message: Value<[Fp; L]>,
 }
 
-impl PoseidonCircuit {
-    pub fn new(message: [Fp; MESSAGE_LEN]) -> Self {
+impl<const L: usize> PoseidonCircuit<L> {
+    pub fn new(message: [Fp; L]) -> Self {
         Self {
             message: Value::known(message),
         }
     }
 }
 
-impl Circuit<Fp> for PoseidonCircuit {
-    type Config = PoseidonConfig;
+impl<const L: usize> Circuit<Fp> for PoseidonCircuit<L> {
+    type Config = PoseidonConfig<L>;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
@@ -46,6 +45,8 @@ impl Circuit<Fp> for PoseidonCircuit {
     }
 
     fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+        assert!(L <= RATE, "spike supports messages up to Poseidon's rate");
+
         let state = [
             meta.advice_column(),
             meta.advice_column(),
@@ -68,7 +69,7 @@ impl Circuit<Fp> for PoseidonCircuit {
         meta.enable_constant(round_constants_b[0]);
 
         PoseidonConfig {
-            input: [state[0], state[1]],
+            input: std::array::from_fn(|index| state[index]),
             output,
             poseidon: Pow5Chip::configure::<P128Pow5T3>(
                 meta,
@@ -88,20 +89,17 @@ impl Circuit<Fp> for PoseidonCircuit {
         let message = layouter.assign_region(
             || "load private message",
             |mut region| {
-                let left = region.assign_advice(
-                    || "message[0]",
-                    config.input[0],
-                    0,
-                    || self.message.map(|message| message[0]),
-                )?;
-                let right = region.assign_advice(
-                    || "message[1]",
-                    config.input[1],
-                    0,
-                    || self.message.map(|message| message[1]),
-                )?;
+                let mut cells = Vec::with_capacity(L);
+                for index in 0..L {
+                    cells.push(region.assign_advice(
+                        || format!("message[{index}]"),
+                        config.input[index],
+                        0,
+                        || self.message.map(|message| message[index]),
+                    )?);
+                }
 
-                Ok([left, right])
+                cells.try_into().map_err(|_| Error::Synthesis)
             },
         )?;
 
@@ -110,7 +108,7 @@ impl Circuit<Fp> for PoseidonCircuit {
             Fp,
             Pow5Chip<Fp, WIDTH, RATE>,
             P128Pow5T3,
-            ConstantLength<MESSAGE_LEN>,
+            ConstantLength<L>,
             WIDTH,
             RATE,
         >::init(chip, layouter.namespace(|| "initialize Poseidon"))?;
@@ -129,8 +127,19 @@ mod tests {
     const K: u32 = 6;
 
     #[test]
-    fn circuit_digest_matches_native_hash() {
+    fn two_input_circuit_digest_matches_native_hash() {
         let message = [Fp::from(7), Fp::from(42)];
+        let digest = poseidon_hash(message);
+        let circuit = PoseidonCircuit::new(message);
+
+        let prover = MockProver::run(K, &circuit, vec![vec![digest]]).unwrap();
+
+        prover.assert_satisfied();
+    }
+
+    #[test]
+    fn one_input_circuit_digest_matches_native_hash() {
+        let message = [Fp::from(7)];
         let digest = poseidon_hash(message);
         let circuit = PoseidonCircuit::new(message);
 
