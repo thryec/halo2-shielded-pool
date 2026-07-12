@@ -4,12 +4,11 @@ use halo2_poseidon::poseidon::primitives::{
 
 use crate::Fp;
 
-/// Number of field elements absorbed by the v0 hash.
 pub const MESSAGE_LEN: usize = 2;
 
-/// Computes a fixed-length two-input Poseidon hash outside the circuit.
-pub fn poseidon_hash(message: [Fp; MESSAGE_LEN]) -> Fp {
-    NativePoseidonHash::<Fp, P128Pow5T3, ConstantLength<MESSAGE_LEN>, 3, 2>::init().hash(message)
+/// Computes either one or two-input Poseidon hash outside the circuit.
+pub fn poseidon_hash<const L: usize>(message: [Fp; L]) -> Fp {
+    NativePoseidonHash::<Fp, P128Pow5T3, ConstantLength<L>, 3, 2>::init().hash(message)
 }
 
 #[cfg(test)]
