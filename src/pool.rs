@@ -1,7 +1,7 @@
 // mimics onchain smart contract by simulating pool state for deposits and withdrawals
 // proof verification happens in offchain prover logic (withdraw.rs)
 
-use crate::{Fp, primitives::merkle::MerkleTree};
+use crate::{primitives::merkle::MerkleTree, Fp};
 
 #[derive(Default)]
 pub struct Pool {
@@ -75,6 +75,7 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::merkle::TREE_CAPACITY;
 
     #[test]
     fn deposit_updates_root() {
@@ -155,5 +156,31 @@ mod tests {
         let empty_root = MerkleTree::new().root();
 
         assert!(pool.is_known_root(empty_root));
+    }
+
+    #[test]
+    fn older_root_remains_recognized_after_later_deposit() {
+        let mut pool = Pool::new();
+
+        pool.deposit(Fp::from(5)).unwrap();
+        let older_root = pool.tree.root();
+
+        pool.deposit(Fp::from(10)).unwrap();
+        let latest_root = pool.tree.root();
+
+        assert_ne!(older_root, latest_root);
+        assert!(pool.is_known_root(older_root));
+        assert!(pool.is_known_root(latest_root));
+    }
+
+    #[test]
+    fn deposit_returns_tree_full_when_tree_is_full() {
+        let mut pool = Pool::new();
+
+        for value in 0..TREE_CAPACITY {
+            pool.tree.insert(Fp::from(value as u64)).unwrap();
+        }
+
+        assert_eq!(pool.deposit(Fp::from(1_000)), Err(PoolError::TreeFull));
     }
 }
