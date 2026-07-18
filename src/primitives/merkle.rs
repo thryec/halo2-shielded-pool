@@ -1,7 +1,7 @@
 // merkle tree operations: insert, root, prove, verify
 
-use crate::Fp;
 use crate::poseidon_hash;
+use crate::Fp;
 
 pub const TREE_DEPTH: usize = 8;
 pub const TREE_CAPACITY: usize = 1 << TREE_DEPTH;
