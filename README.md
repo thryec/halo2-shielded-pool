@@ -1,31 +1,56 @@
 # halo2-shielded-pool
 
-A Tornado-style shielded pool in halo2 (PSE fork). Deposit a note, withdraw it later from a different address; a zero-knowledge proof shows the note is in the pool without revealing which one.
+Halo2 shielded asset pool using Poseidon and Merkle proofs.
 
-## Architecture
+## Protocol
 
-Three layers:
+```text
+commitment     = Poseidon(nullifier, secret, value)
+nullifier_hash = Poseidon(nullifier)
+```
 
-- `src/primitives/` — plain-Rust domain logic: notes, Poseidon commitments, nullifier hashes, incremental Merkle tree. No circuit code. Everything the circuits prove is computed and tested here first.
-- `src/circuits/` — Merkle inclusion chip, commitment and nullifier sub-circuits, composed into a withdraw circuit. Public inputs: root and nullifier hash.
-- Contracts (final stage) — generated Solidity verifier plus a minimal pool contract: on-chain commitment tree, nullifier set, recent-root history.
+Commitments are Merkle leaves. Nullifier hashes prevent replay without revealing the spent commitment.
 
-## Build stages
+## Proof
 
-- v0 — Poseidon spike: dependency resolution, chip API, in-circuit digest agrees with off-circuit reference
-- v1 — fixed-denomination pool, MockProver only
-- v2 — variable amounts: join-split, value balance, 64-bit range checks via lookups
-- v3 — real KZG proofs, Solidity verifier, end-to-end on anvil
+```text
+commitment_i = Poseidon(nullifier_i, secret_i, value_i)
+commitment_i is included in root
+nullifier_hash_i = Poseidon(nullifier_i)
 
-## Security model
+input_value_1 + input_value_2
+    = output_value_1 + output_value_2 + withdrawn
+```
 
-- Every advice cell is pinned by a constraint; no assigned-but-unconstrained witnesses.
-- Merkle path bits are boolean-constrained; digests are copy-constrained between levels.
-- Values are range-checked before balance arithmetic, since unchecked field arithmetic allows minting via overflow.
-- The recipient is bound into the proven statement, so a relayer cannot redirect a withdrawal.
+The circuit range-checks values to 64 bits, computes output commitments, and binds the recipient.
 
-## Build & test
+Public inputs:
+
+```text
+root
+nullifier_hash_1
+nullifier_hash_2
+output_commitment_1
+output_commitment_2
+withdrawn
+recipient
+```
+
+The contract checks the root and nullifiers, verifies the proof, updates pool state, and pays the recipient.
+
+## Invariants
+
+- Every advice cell is constrained.
+- One nullifier cell feeds both hashes.
+- Merkle path bits are Boolean; digests are copy-constrained between levels.
+- Values are range-checked before balance arithmetic.
+- The recipient is bound to the proof.
+- Roots must be known and nullifiers unused.
+
+## Commands
 
 ```sh
 cargo test
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
