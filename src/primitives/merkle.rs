@@ -98,6 +98,14 @@ impl MerkleTree {
 }
 
 impl MerklePath {
+    pub fn siblings(&self) -> &[Fp; TREE_DEPTH] {
+        &self.siblings
+    }
+
+    pub fn path_bits(&self) -> &[bool; TREE_DEPTH] {
+        &self.path_bits
+    }
+
     fn compute_root(&self, leaf: Fp) -> Fp {
         let mut current = leaf;
 

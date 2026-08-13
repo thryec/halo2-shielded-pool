@@ -5,6 +5,8 @@ use halo2_poseidon::poseidon::primitives::{
 use crate::Fp;
 
 pub const MESSAGE_LEN: usize = 2;
+pub const POSEIDON_WIDTH: usize = 3;
+pub const POSEIDON_RATE: usize = 2;
 
 /// Computes a Poseidon hash outside the circuit.
 ///
