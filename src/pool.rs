@@ -1,7 +1,10 @@
 // mimics onchain smart contract by simulating pool state for deposits and withdrawals
 // proof verification happens in offchain prover logic (withdraw.rs)
 
-use crate::{primitives::merkle::MerkleTree, Fp};
+use crate::{
+    Fp,
+    primitives::merkle::{MerkleError, MerklePath, MerkleTree},
+};
 
 #[derive(Default)]
 pub struct Pool {
@@ -41,6 +44,14 @@ impl Pool {
         self.known_roots.push(new_root);
 
         Ok(index)
+    }
+
+    pub fn root(&self) -> Fp {
+        self.tree.root()
+    }
+
+    pub fn merkle_path(&self, index: usize) -> Result<MerklePath, MerkleError> {
+        self.tree.prove(index)
     }
 
     // check if nullifier hash is spent
