@@ -61,8 +61,7 @@ cargo test withdraw
 
 ## Future work
 
-- Link circuit checks to pool state updates in an end-to-end flow.
-- Add real key generation, proof generation, and proof verification.
-- Add variable-value notes, range checks, balance constraints, and join-split outputs.
-- Bind the withdrawal recipient to the proof.
-- Add a Solidity verifier and pool contract with an incremental Merkle tree.
+- [ ] Implement Halo2 proof generation and verification beyond `MockProver`.
+- [ ] Extend notes with variable values, enforce range constraints, and prove value conservation across inputs, outputs, and withdrawals.
+- [ ] Bind each withdrawal proof to its intended recipient.
+- [ ] Implement a Solidity verifier and pool contract with incremental Merkle tree updates.
