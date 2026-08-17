@@ -4,53 +4,65 @@ Halo2 shielded asset pool using Poseidon and Merkle proofs.
 
 ## Protocol
 
+A note contains a private nullifier and secret:
+
 ```text
-commitment     = Poseidon(nullifier, secret, value)
+commitment     = Poseidon(nullifier, secret)
 nullifier_hash = Poseidon(nullifier)
 ```
 
-Commitments are Merkle leaves. Nullifier hashes prevent replay without revealing the spent commitment.
+The commitment becomes a Merkle leaf. The nullifier hash identifies a spend without revealing which commitment it spends.
 
-## Proof
+## Circuit components
+
+### Note hash gadget
+
+`NoteHashChip` assigns the nullifier once and feeds the same cell into both Poseidon hashes. It returns constrained commitment and nullifier-hash cells.
+
+### Merkle gadget
+
+`MerkleChip` accepts the commitment cell, eight private siblings, and eight private path bits. Boolean and ordering constraints select each hash input, while copy constraints link the eight tree levels.
+
+### Withdraw circuit
+
+`WithdrawCircuit` feeds the commitment into the Merkle gadget, then binds the computed root and nullifier hash to public inputs.
 
 ```text
-commitment_i = Poseidon(nullifier_i, secret_i, value_i)
-commitment_i is included in root
-nullifier_hash_i = Poseidon(nullifier_i)
+private: nullifier, secret, siblings[8], path_bits[8]
+public:  root, nullifier_hash
 
-input_value_1 + input_value_2
-    = output_value_1 + output_value_2 + withdrawn
+private note -> commitment -> Merkle path -> public root
+nullifier   -> nullifier hash             -> public input
 ```
 
-The circuit range-checks values to 64 bits, computes output commitments, and binds the recipient.
-
-Public inputs:
+Public instance layout:
 
 ```text
-root
-nullifier_hash_1
-nullifier_hash_2
-output_commitment_1
-output_commitment_2
-withdrawn
-recipient
+instance[0] = root
+instance[1] = nullifier_hash
 ```
 
-The contract checks the root and nullifiers, verifies the proof, updates pool state, and pays the recipient.
+## State checks
 
-## Invariants
+The circuit proves note membership and derives the nullifier hash. The native pool simulation checks that the root is known and the nullifier hash is unused. Deposits store commitments without storing private note data.
 
-- Every advice cell is constrained.
-- One nullifier cell feeds both hashes.
-- Merkle path bits are Boolean; digests are copy-constrained between levels.
-- Values are range-checked before balance arithmetic.
-- The recipient is bound to the proof.
-- Roots must be known and nullifiers unused.
+## Dependency note
 
-## Commands
+This project pins the PSE Halo2 fork at `v0.3.0` to match `halo2_poseidon v0.2.0`. Both dependencies resolve to one `halo2_proofs` version, avoiding incompatible circuit types.
+
+## Testing
+
+`MockProver` accepts an honest note and path. Negative tests cover a wrong root, wrong nullifier hash, absent note, changed secret, and altered Merkle path.
 
 ```sh
 cargo test
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo test withdraw
 ```
+
+## Future work
+
+- Link circuit checks to pool state updates in an end-to-end flow.
+- Add real key generation, proof generation, and proof verification.
+- Add variable-value notes, range checks, balance constraints, and join-split outputs.
+- Bind the withdrawal recipient to the proof.
+- Add a Solidity verifier and pool contract with an incremental Merkle tree.
