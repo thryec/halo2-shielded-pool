@@ -1,7 +1,7 @@
 // computes note using nullifier hash and secret
 
-use crate::poseidon_hash;
 use crate::Fp;
+use crate::poseidon_hash;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Note {

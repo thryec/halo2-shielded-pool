@@ -22,6 +22,8 @@ pub struct NoteHashChip {
     _ph: PhantomData<Fp>,
 }
 
+pub type NoteHashes = (AssignedCell<Fp, Fp>, AssignedCell<Fp, Fp>);
+
 impl NoteHashChip {
     pub fn construct(config: NoteHashConfig) -> Self {
         NoteHashChip {
@@ -53,7 +55,7 @@ impl NoteHashChip {
         mut layouter: impl Layouter<Fp>,
         nullifier: Value<Fp>,
         secret: Value<Fp>,
-    ) -> Result<(AssignedCell<Fp, Fp>, AssignedCell<Fp, Fp>), Error> {
+    ) -> Result<NoteHashes, Error> {
         let config = &self.config;
 
         let (nullifier_cell, secret_cell) = layouter.assign_region(

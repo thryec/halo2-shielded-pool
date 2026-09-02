@@ -153,7 +153,7 @@ mod tests {
             path_bits,
         };
 
-        return (circuit, tree.root(), note.nullifier_hash());
+        (circuit, tree.root(), note.nullifier_hash())
     }
 
     #[test]
@@ -180,8 +180,7 @@ mod tests {
         let (circuit, root, nullifier_hash) = initialize_circuit_state();
         let wrong_nullifier_hash = nullifier_hash + Fp::from(1);
 
-        let prover =
-            MockProver::run(K, &circuit, vec![vec![root, wrong_nullifier_hash]]).unwrap();
+        let prover = MockProver::run(K, &circuit, vec![vec![root, wrong_nullifier_hash]]).unwrap();
 
         assert!(prover.verify().is_err());
     }
@@ -193,12 +192,8 @@ mod tests {
         circuit.nullifier = Value::known(absent_note.nullifier());
         circuit.secret = Value::known(absent_note.secret());
 
-        let prover = MockProver::run(
-            K,
-            &circuit,
-            vec![vec![root, absent_note.nullifier_hash()]],
-        )
-        .unwrap();
+        let prover =
+            MockProver::run(K, &circuit, vec![vec![root, absent_note.nullifier_hash()]]).unwrap();
 
         assert!(prover.verify().is_err());
     }

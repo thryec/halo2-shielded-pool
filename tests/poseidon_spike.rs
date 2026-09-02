@@ -1,13 +1,13 @@
 use halo2_poseidon::poseidon::{
-    primitives::{ConstantLength, P128Pow5T3},
     Hash as CircuitPoseidonHash, Pow5Chip, Pow5Config,
+    primitives::{ConstantLength, P128Pow5T3},
 };
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
 };
 
-use halo2_shielded_pool::{poseidon_hash, Fp};
+use halo2_shielded_pool::{Fp, poseidon_hash};
 
 const WIDTH: usize = 3;
 const RATE: usize = 2;
