@@ -50,6 +50,8 @@ The circuit proves note membership and derives the nullifier hash. The native po
 
 This project pins the PSE Halo2 fork at `v0.3.0` to match `halo2_poseidon v0.2.0`. Both dependencies resolve to one `halo2_proofs` version, avoiding incompatible circuit types.
 
+The PSE fork is now archived. The Pallas v1 circuit and v2 Rust proof stage remain pinned as a reproducible learning artifact. Before any BN254 pool port, the plan requires an isolated EVM spike and an explicit move to a maintained backend.
+
 ## Testing
 
 `MockProver` accepts an honest note and path. Negative tests cover a wrong root, wrong nullifier hash, absent note, changed secret, and altered Merkle path.
@@ -61,7 +63,11 @@ cargo test withdraw
 
 ## Future work
 
-- [ ] Implement Halo2 proof generation and verification beyond `MockProver`.
-- [ ] Extend notes with variable values, enforce range constraints, and prove value conservation across inputs, outputs, and withdrawals.
-- [ ] Bind each withdrawal proof to its intended recipient.
-- [ ] Implement a Solidity verifier and pool contract with incremental Merkle tree updates.
+- [ ] Generate and verify real Pallas/IPA proofs in Rust.
+- [ ] Prove a minimal BN254/KZG circuit through a Solidity verifier.
+- [ ] Select and pin a maintained Halo2, Poseidon, transcript, and verifier stack.
+- [ ] Port the fixed-denomination pool to BN254 and bind recipient plus protocol domain.
+- [ ] Run deposit → prove → withdraw against a local EVM contract.
+- [ ] Add variable-value notes, ownership, range checks, and value conservation.
+- [ ] Freeze a versioned proof/calldata boundary, complete outside review, and publish benchmarks.
+- [ ] Compare one frozen pool rule with an AIR/STARK implementation.
