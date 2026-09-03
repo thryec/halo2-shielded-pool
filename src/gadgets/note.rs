@@ -1,8 +1,8 @@
 use crate::Fp;
 use crate::primitives::poseidon::{POSEIDON_RATE, POSEIDON_WIDTH};
 use halo2_poseidon::poseidon::{
-    Hash as CircuitPoseidonHash, Pow5Chip, Pow5Config,
-    primitives::{ConstantLength, P128Pow5T3},
+    Hash as CircuitPoseidonHash, PaddedWord, Pow5Chip, Pow5Config, Sponge,
+    primitives::{Absorbing, ConstantLength, P128Pow5T3},
 };
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, Value},
@@ -68,8 +68,7 @@ impl NoteHashChip {
             },
         )?;
 
-        // create two hasher instances because .hash consumes the instance
-        // and each input length needs its own hasher
+        // create separate Poseidon instances for each domain
         let commitment_chip = Pow5Chip::construct(config.poseidon.clone());
         let commitment_hasher = CircuitPoseidonHash::<
             Fp,
@@ -88,21 +87,38 @@ impl NoteHashChip {
             [nullifier_cell.clone(), secret_cell.clone()],
         )?;
 
-        let nullifier_chip = Pow5Chip::construct(config.poseidon.clone());
-        let nullifier_hasher =
-            CircuitPoseidonHash::<
-                Fp,
-                Pow5Chip<Fp, POSEIDON_WIDTH, POSEIDON_RATE>,
-                P128Pow5T3,
-                ConstantLength<1>,
-                POSEIDON_WIDTH,
-                POSEIDON_RATE,
-            >::init(nullifier_chip, layouter.namespace(|| "initialise Poseidon"))?;
-
-        let nullifier_hash = nullifier_hasher.hash(
-            layouter.namespace(|| "hash nullifier hash"),
-            [nullifier_cell],
+        // Keep padding known during real proving and constrain it to zero.
+        let padding_cell = layouter.assign_region(
+            || "load nullifier hash padding",
+            |mut region| {
+                region.assign_advice_from_constant(|| "padding", config.nullifier, 0, Fp::from(0))
+            },
         )?;
+
+        let nullifier_chip = Pow5Chip::construct(config.poseidon.clone());
+        let mut nullifier_hasher = Sponge::<
+            Fp,
+            Pow5Chip<Fp, POSEIDON_WIDTH, POSEIDON_RATE>,
+            P128Pow5T3,
+            Absorbing<PaddedWord<Fp>, POSEIDON_RATE>,
+            ConstantLength<1>,
+            POSEIDON_WIDTH,
+            POSEIDON_RATE,
+        >::new(
+            nullifier_chip,
+            layouter.namespace(|| "initialise nullifier Poseidon"),
+        )?;
+        nullifier_hasher.absorb(
+            layouter.namespace(|| "absorb nullifier"),
+            PaddedWord::Message(nullifier_cell),
+        )?;
+        nullifier_hasher.absorb(
+            layouter.namespace(|| "absorb nullifier padding"),
+            PaddedWord::Message(padding_cell),
+        )?;
+        let nullifier_hash = nullifier_hasher
+            .finish_absorbing(layouter.namespace(|| "finish nullifier Poseidon"))?
+            .squeeze(layouter.namespace(|| "squeeze nullifier hash"))?;
 
         Ok((commitment, nullifier_hash))
     }
