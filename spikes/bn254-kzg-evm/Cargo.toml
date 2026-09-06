@@ -1,0 +1,18 @@
+[package]
+name = "bn254-kzg-evm-spike"
+version = "0.3.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+halo2_proofs = { package = "halo2-axiom", version = "=0.5.3", default-features = false, features = ["batch", "multicore"] }
+snark-verifier = { version = "=0.2.7", default-features = false, features = ["loader_halo2", "loader_evm"] }
+snark-verifier-sdk = { version = "=0.2.7", default-features = false, features = ["loader_halo2", "loader_evm"] }
+light-poseidon = "=0.4.0"
+ark-bn254 = "=0.5.0"
+ark-ff = "=0.5.0"
+rand = "=0.8.6"
+hex = "=0.4.3"
+serde_json = "=1.0.149"
