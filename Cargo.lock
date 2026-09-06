@@ -187,6 +187,7 @@ version = "0.1.0"
 dependencies = [
  "halo2_poseidon",
  "halo2_proofs",
+ "rand_core",
 ]
 
 [[package]]

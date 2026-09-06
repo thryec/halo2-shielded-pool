@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0" }
 halo2_poseidon = { git = "https://github.com/privacy-ethereum/poseidon-gadget", rev = "2478c86285a25c27ee75fd3a000f84b70a8ad231" }
+
+[dev-dependencies]
+rand_core = { version = "0.6.4", features = ["getrandom"] }
