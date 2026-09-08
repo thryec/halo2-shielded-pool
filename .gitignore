@@ -1,4 +1,8 @@
 /target
+/out
+/cache
+/artifacts
+/contracts/generated
 CLAUDE.md
 AGENTS.md
 docs/

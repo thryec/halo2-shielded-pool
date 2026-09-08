@@ -1,16 +1,15 @@
-// mimics onchain smart contract by simulating pool state for deposits and withdrawals
-// proof verification happens in offchain prover logic (withdraw.rs)
+// native pool state simulation — caller must verify the proof before recording a withdrawal
 
 use crate::{
-    Fp,
+    Fr,
     primitives::merkle::{MerkleError, MerklePath, MerkleTree},
 };
 
 #[derive(Default)]
 pub struct Pool {
     tree: MerkleTree,
-    known_roots: Vec<Fp>,
-    spent_nullifier_hashes: Vec<Fp>,
+    known_roots: Vec<Fr>,
+    spent_nullifier_hashes: Vec<Fr>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +33,7 @@ impl Pool {
 
     // insert commitment as leaf into tree
     // record new root
-    pub fn deposit(&mut self, commitment: Fp) -> Result<usize, PoolError> {
+    pub fn deposit(&mut self, commitment: Fr) -> Result<usize, PoolError> {
         let index = self
             .tree
             .insert(commitment)
@@ -46,7 +45,7 @@ impl Pool {
         Ok(index)
     }
 
-    pub fn root(&self) -> Fp {
+    pub fn root(&self) -> Fr {
         self.tree.root()
     }
 
@@ -58,7 +57,7 @@ impl Pool {
     // if so, reject withdrawal
     // check if root is in valid known roots
     // if hash and root are valid, store hash in spent hashes and return success for withdrawal
-    pub fn record_withdrawal(&mut self, root: Fp, nullifier_hash: Fp) -> Result<(), PoolError> {
+    pub fn record_withdrawal(&mut self, root: Fr, nullifier_hash: Fr) -> Result<(), PoolError> {
         if !self.is_known_root(root) {
             return Err(PoolError::UnknownRoot);
         }
@@ -73,12 +72,12 @@ impl Pool {
     }
 
     // check if root exists in known_roots
-    pub fn is_known_root(&self, root: Fp) -> bool {
+    pub fn is_known_root(&self, root: Fr) -> bool {
         self.known_roots.contains(&root)
     }
 
     // check nullifier against spent_nullifier_hashes
-    pub fn is_spent_nullifier(&self, nullifier_hash: Fp) -> bool {
+    pub fn is_spent_nullifier(&self, nullifier_hash: Fr) -> bool {
         self.spent_nullifier_hashes.contains(&nullifier_hash)
     }
 }
@@ -92,7 +91,7 @@ mod tests {
     fn deposit_updates_root() {
         let mut pool = Pool::new();
         let root1 = pool.tree.root();
-        let commitment = Fp::from(5);
+        let commitment = Fr::from(5);
 
         let index = pool.deposit(commitment).unwrap();
         let root2 = pool.tree.root();
@@ -104,7 +103,7 @@ mod tests {
     #[test]
     fn deposit_root_becomes_recognized() {
         let mut pool = Pool::new();
-        let commitment = Fp::from(5);
+        let commitment = Fr::from(5);
 
         let index = pool.deposit(commitment).unwrap();
         let root = pool.tree.root();
@@ -116,8 +115,8 @@ mod tests {
     #[test]
     fn can_withdraw_from_pool() {
         let mut pool = Pool::new();
-        let commitment = Fp::from(5);
-        let nullifier_hash = Fp::from(10);
+        let commitment = Fr::from(5);
+        let nullifier_hash = Fr::from(10);
 
         pool.deposit(commitment).unwrap();
         let root = pool.tree.root();
@@ -131,8 +130,8 @@ mod tests {
     #[test]
     fn reusing_nullifier_hash_fails() {
         let mut pool = Pool::new();
-        let commitment = Fp::from(5);
-        let nullifier_hash = Fp::from(10);
+        let commitment = Fr::from(5);
+        let nullifier_hash = Fr::from(10);
 
         pool.deposit(commitment).unwrap();
         let root = pool.tree.root();
@@ -149,11 +148,11 @@ mod tests {
     #[test]
     fn unknown_root_fails() {
         let mut pool = Pool::new();
-        let commitment = Fp::from(5);
-        let nullifier_hash = Fp::from(10);
+        let commitment = Fr::from(5);
+        let nullifier_hash = Fr::from(10);
 
         pool.deposit(commitment).unwrap();
-        let root = pool.tree.root() + Fp::from(1);
+        let root = pool.tree.root() + Fr::from(1);
 
         assert_eq!(
             pool.record_withdrawal(root, nullifier_hash),
@@ -173,10 +172,10 @@ mod tests {
     fn older_root_remains_recognized_after_later_deposit() {
         let mut pool = Pool::new();
 
-        pool.deposit(Fp::from(5)).unwrap();
+        pool.deposit(Fr::from(5)).unwrap();
         let older_root = pool.tree.root();
 
-        pool.deposit(Fp::from(10)).unwrap();
+        pool.deposit(Fr::from(10)).unwrap();
         let latest_root = pool.tree.root();
 
         assert_ne!(older_root, latest_root);
@@ -189,9 +188,9 @@ mod tests {
         let mut pool = Pool::new();
 
         for value in 0..TREE_CAPACITY {
-            pool.tree.insert(Fp::from(value as u64)).unwrap();
+            pool.tree.insert(Fr::from(value as u64)).unwrap();
         }
 
-        assert_eq!(pool.deposit(Fp::from(1_000)), Err(PoolError::TreeFull));
+        assert_eq!(pool.deposit(Fr::from(1_000)), Err(PoolError::TreeFull));
     }
 }

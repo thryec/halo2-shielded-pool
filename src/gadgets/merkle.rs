@@ -1,166 +1,139 @@
-use crate::primitives::poseidon::{POSEIDON_RATE, POSEIDON_WIDTH};
-use crate::{Fp, primitives::merkle::TREE_DEPTH};
-use halo2_poseidon::poseidon::{
-    Hash as CircuitPoseidonHash, Pow5Chip, Pow5Config,
-    primitives::{ConstantLength, P128Pow5T3},
+use crate::{
+    Fr,
+    gadgets::{
+        AssignedValue,
+        poseidon::{PoseidonChip, PoseidonConfig},
+    },
+    primitives::merkle::TREE_DEPTH,
 };
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, Value},
+    circuit::{Layouter, Value},
+    halo2curves::ff::Field,
     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
     poly::Rotation,
 };
-use std::marker::PhantomData;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MerkleConfig {
     current: Column<Advice>,
     sibling: Column<Advice>,
-    path_bit: Column<Advice>,
+    bit: Column<Advice>,
     left: Column<Advice>,
     right: Column<Advice>,
-    q_order: Selector,
-    poseidon: Pow5Config<Fp, POSEIDON_WIDTH, POSEIDON_RATE>,
+    pub(crate) order: Selector,
+    poseidon: PoseidonConfig<3>,
 }
 
 pub struct MerkleChip {
     config: MerkleConfig,
-    _ph: PhantomData<Fp>,
+    #[cfg(test)]
+    fault: Option<(usize, Fault)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum Fault {
+    Current,
+    Left,
+    Right,
 }
 
 impl MerkleChip {
-    pub fn construct(config: MerkleConfig) -> Self {
-        MerkleChip {
-            config,
-            _ph: PhantomData,
+    pub fn configure(meta: &mut ConstraintSystem<Fr>, poseidon: PoseidonConfig<3>) -> MerkleConfig {
+        let [current, sibling, bit, left, right] = std::array::from_fn(|_| meta.advice_column());
+        for column in [current, left, right] {
+            meta.enable_equality(column);
         }
-    }
-
-    pub fn configure(
-        meta: &mut ConstraintSystem<Fp>,
-        current: Column<Advice>,
-        sibling: Column<Advice>,
-        path_bit: Column<Advice>,
-        left: Column<Advice>,
-        right: Column<Advice>,
-        poseidon: Pow5Config<Fp, POSEIDON_WIDTH, POSEIDON_RATE>,
-    ) -> MerkleConfig {
-        let q_order = meta.selector();
-
-        meta.enable_equality(current);
-        meta.enable_equality(left);
-        meta.enable_equality(right);
-
-        // path bit is either 0 or 1
-        meta.create_gate("path bit boolean", |meta| {
-            let path_bit = meta.query_advice(path_bit, Rotation::cur());
-            let q_order = meta.query_selector(q_order);
-            let one = Expression::Constant(Fp::from(1));
-
-            vec![q_order * path_bit.clone() * (one - path_bit)]
-        });
-
-        // left matches current or sibling, depending on path bit
-        meta.create_gate("left order", |meta| {
+        let order = meta.selector();
+        meta.create_gate("Merkle order", |meta| {
+            let q = meta.query_selector(order);
+            let current = meta.query_advice(current, Rotation::cur());
+            let sibling = meta.query_advice(sibling, Rotation::cur());
+            let bit = meta.query_advice(bit, Rotation::cur());
             let left = meta.query_advice(left, Rotation::cur());
-            let current = meta.query_advice(current, Rotation::cur());
-            let sibling = meta.query_advice(sibling, Rotation::cur());
-            let path_bit = meta.query_advice(path_bit, Rotation::cur());
-
-            let q_order = meta.query_selector(q_order);
-
-            let one = Expression::Constant(Fp::from(1));
-
-            // if path bit = 0, left = current
-            // if path bit = 1, left = sibling
-            vec![
-                q_order.clone() * path_bit.clone() * (left.clone() - sibling),
-                q_order * (one - path_bit) * (left - current),
-            ]
-        });
-
-        // right is the other value
-        meta.create_gate("right order", |meta| {
             let right = meta.query_advice(right, Rotation::cur());
-            let current = meta.query_advice(current, Rotation::cur());
-            let sibling = meta.query_advice(sibling, Rotation::cur());
-            let path_bit = meta.query_advice(path_bit, Rotation::cur());
-
-            let q_order = meta.query_selector(q_order);
-
-            let one = Expression::Constant(Fp::from(1));
-
-            // if path bit = 0, right = sibling
-            // if path bit = 1, right = current
             vec![
-                q_order.clone() * path_bit.clone() * (right.clone() - current),
-                q_order * (one - path_bit) * (right - sibling),
+                q.clone() * bit.clone() * (bit.clone() - Expression::Constant(Fr::ONE)),
+                q.clone()
+                    * (left - current.clone() - bit.clone() * (sibling.clone() - current.clone())),
+                q * (right - sibling.clone() - bit * (current - sibling)),
             ]
         });
-
         MerkleConfig {
             current,
             sibling,
-            path_bit,
+            bit,
             left,
             right,
-            q_order,
+            order,
             poseidon,
         }
     }
 
-    // returns assigned cell holding the computed root
+    pub fn construct(config: MerkleConfig) -> Self {
+        Self {
+            config,
+            #[cfg(test)]
+            fault: None,
+        }
+    }
+
     pub fn compute_root(
-        &self,                              // merkle chip and config
-        mut layouter: impl Layouter<Fp>,    // assigns circuit regions
-        leaf: AssignedCell<Fp, Fp>,         // constrained commitment cell
-        siblings: [Value<Fp>; TREE_DEPTH],  // eight private sibling hashes
-        path_bits: [Value<Fp>; TREE_DEPTH], // eight private values expected to be 0 or 1
-    ) -> Result<AssignedCell<Fp, Fp>, Error> {
-        let config = &self.config;
+        &self,
+        mut layouter: impl Layouter<Fr>,
+        offset: &mut usize,
+        leaf: AssignedValue,
+        siblings: [Value<Fr>; TREE_DEPTH],
+        bits: [Value<Fr>; TREE_DEPTH],
+    ) -> Result<AssignedValue, Error> {
         let mut current = leaf;
-
         for level in 0..TREE_DEPTH {
+            let row = *offset;
+            *offset += 1;
+            let config = &self.config;
+            let current_value = current.value;
+            #[cfg(test)]
+            let current_value = if matches!(self.fault, Some((index, Fault::Current)) if index == level)
+            {
+                current_value + Value::known(Fr::ONE)
+            } else {
+                current_value
+            };
             let sibling = siblings[level];
-            let path_bit = path_bits[level];
-            let current_value = current.value().copied();
-
-            let left_value = current_value + path_bit * (sibling - current_value);
-            let right_value = sibling + path_bit * (current_value - sibling);
-
-            let (left_cell, right_cell) = layouter.assign_region(
-                || format!("order Merkle level {level}"),
+            let bit = bits[level];
+            let left = current_value + bit * (sibling - current_value);
+            let right = sibling + bit * (current_value - sibling);
+            #[cfg(test)]
+            let left = if matches!(self.fault, Some((index, Fault::Left)) if index == level) {
+                left + Value::known(Fr::ONE)
+            } else {
+                left
+            };
+            #[cfg(test)]
+            let right = if matches!(self.fault, Some((index, Fault::Right)) if index == level) {
+                right + Value::known(Fr::ONE)
+            } else {
+                right
+            };
+            let inputs = layouter.assign_region(
+                || format!("order level {level}"),
                 |mut region| {
-                    config.q_order.enable(&mut region, 0)?;
-
-                    current.copy_advice(|| "current", &mut region, config.current, 0)?;
-                    region.assign_advice(|| "sibling", config.sibling, 0, || sibling)?;
-                    region.assign_advice(|| "path bit", config.path_bit, 0, || path_bit)?;
-
-                    let left_cell =
-                        region.assign_advice(|| "left", config.left, 0, || left_value)?;
-                    let right_cell =
-                        region.assign_advice(|| "right", config.right, 0, || right_value)?;
-
-                    Ok((left_cell, right_cell))
+                    config.order.enable(&mut region, row)?;
+                    let copied =
+                        AssignedValue::assign(&mut region, config.current, row, current_value);
+                    region.constrain_equal(copied.cell, current.cell);
+                    AssignedValue::assign(&mut region, config.sibling, row, sibling);
+                    AssignedValue::assign(&mut region, config.bit, row, bit);
+                    Ok([
+                        AssignedValue::assign(&mut region, config.left, row, left),
+                        AssignedValue::assign(&mut region, config.right, row, right),
+                    ])
                 },
             )?;
-
-            let poseidon_chip = Pow5Chip::construct(config.poseidon.clone());
-            let hasher = CircuitPoseidonHash::<
-                Fp,
-                Pow5Chip<Fp, POSEIDON_WIDTH, POSEIDON_RATE>,
-                P128Pow5T3,
-                ConstantLength<2>,
-                POSEIDON_WIDTH,
-                POSEIDON_RATE,
-            >::init(
-                poseidon_chip,
-                layouter.namespace(|| format!("initialise Poseidon level {level}")),
-            )?;
-
-            current = hasher.hash(
-                layouter.namespace(|| format!("hash Merkle level {level}")),
-                [left_cell, right_cell],
+            current = PoseidonChip::construct(config.poseidon.clone()).hash(
+                layouter.namespace(|| format!("parent {level}")),
+                offset,
+                inputs,
             )?;
         }
         Ok(current)
@@ -170,186 +143,167 @@ impl MerkleChip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::merkle::MerkleTree;
+    use crate::primitives::{merkle::MerkleTree, poseidon::poseidon_hash};
     use halo2_proofs::{
         circuit::SimpleFloorPlanner,
-        dev::MockProver,
+        dev::{MockProver, VerifyFailure},
         plonk::{Circuit, Instance},
     };
 
-    const K: u32 = 10;
-
     #[derive(Clone)]
-    struct MerkleTestConfig {
-        merkle: MerkleConfig,
-        instance: Column<Instance>,
+    struct PathCircuit {
+        leaf: Fr,
+        siblings: [Fr; TREE_DEPTH],
+        bits: [Fr; TREE_DEPTH],
+        root: Fr,
+        fault: Option<(usize, Fault)>,
     }
 
-    #[derive(Clone)]
-    struct MerkleTestCircuit {
-        leaf: Value<Fp>,
-        siblings: [Value<Fp>; TREE_DEPTH],
-        path_bits: [Value<Fp>; TREE_DEPTH],
-    }
-
-    impl MerkleTestCircuit {
-        fn new(leaf: Fp, siblings: [Fp; TREE_DEPTH], path_bits: [Fp; TREE_DEPTH]) -> Self {
-            Self {
-                leaf: Value::known(leaf),
-                siblings: siblings.map(Value::known),
-                path_bits: path_bits.map(Value::known),
-            }
-        }
-    }
-
-    impl Circuit<Fp> for MerkleTestCircuit {
-        type Config = MerkleTestConfig;
+    impl Circuit<Fr> for PathCircuit {
+        type Config = (MerkleConfig, Column<Instance>);
         type FloorPlanner = SimpleFloorPlanner;
-
+        type Params = ();
         fn without_witnesses(&self) -> Self {
-            Self {
-                leaf: Value::unknown(),
-                siblings: [Value::unknown(); TREE_DEPTH],
-                path_bits: [Value::unknown(); TREE_DEPTH],
-            }
+            self.clone()
         }
-
-        fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
-            let current = meta.advice_column();
-            let sibling = meta.advice_column();
-            let path_bit = meta.advice_column();
-            let left = meta.advice_column();
-            let right = meta.advice_column();
-
-            let state = [
-                meta.advice_column(),
-                meta.advice_column(),
-                meta.advice_column(),
-            ];
-            let partial_sbox = meta.advice_column();
-            let round_constants_a = [
-                meta.fixed_column(),
-                meta.fixed_column(),
-                meta.fixed_column(),
-            ];
-            let round_constants_b = [
-                meta.fixed_column(),
-                meta.fixed_column(),
-                meta.fixed_column(),
-            ];
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            let poseidon = PoseidonChip::<3>::configure(meta);
+            let merkle = MerkleChip::configure(meta, poseidon);
             let instance = meta.instance_column();
-
             meta.enable_equality(instance);
-            meta.enable_constant(round_constants_b[0]);
-
-            let poseidon = Pow5Chip::configure::<P128Pow5T3>(
-                meta,
-                state,
-                partial_sbox,
-                round_constants_a,
-                round_constants_b,
-            );
-            let merkle =
-                MerkleChip::configure(meta, current, sibling, path_bit, left, right, poseidon);
-
-            MerkleTestConfig { merkle, instance }
+            (merkle, instance)
         }
-
         fn synthesize(
             &self,
             config: Self::Config,
-            mut layouter: impl Layouter<Fp>,
+            mut layouter: impl Layouter<Fr>,
         ) -> Result<(), Error> {
-            let leaf_cell = layouter.assign_region(
-                || "load leaf",
+            let leaf = layouter.assign_region(
+                || "leaf",
                 |mut region| {
-                    region.assign_advice(|| "leaf", config.merkle.current, 0, || self.leaf)
+                    Ok(AssignedValue::assign(
+                        &mut region,
+                        config.0.current,
+                        0,
+                        Value::known(self.leaf),
+                    ))
                 },
             )?;
-
-            let chip = MerkleChip::construct(config.merkle);
+            let mut chip = MerkleChip::construct(config.0);
+            chip.fault = self.fault;
+            let mut offset = 1;
             let root = chip.compute_root(
-                layouter.namespace(|| "compute Merkle root"),
-                leaf_cell,
-                self.siblings,
-                self.path_bits,
+                layouter.namespace(|| "path"),
+                &mut offset,
+                leaf,
+                self.siblings.map(Value::known),
+                self.bits.map(Value::known),
             )?;
-
-            layouter.constrain_instance(root.cell(), config.instance, 0)
+            layouter.constrain_instance(root.cell, config.1, 0);
+            Ok(())
         }
     }
 
-    fn native_witness(
-        leaves: &[Fp],
-        leaf_index: usize,
-    ) -> (Fp, [Fp; TREE_DEPTH], [Fp; TREE_DEPTH], Fp) {
+    fn circuit() -> PathCircuit {
         let mut tree = MerkleTree::new();
-        for leaf in leaves {
-            tree.insert(*leaf).unwrap();
+        for leaf in 1..=8 {
+            tree.insert(Fr::from(leaf)).unwrap();
         }
+        let path = tree.prove(5).unwrap();
+        PathCircuit {
+            leaf: Fr::from(6),
+            siblings: *path.siblings(),
+            bits: path.path_bits().map(|bit| Fr::from(u64::from(bit))),
+            root: tree.root(),
+            fault: None,
+        }
+    }
 
-        let path = tree.prove(leaf_index).unwrap();
-        let siblings = *path.siblings();
-        let path_bits = std::array::from_fn(|level| Fp::from(path.path_bits()[level] as u64));
-
-        (leaves[leaf_index], siblings, path_bits, tree.root())
+    fn forged_root(circuit: &PathCircuit) -> Fr {
+        let mut current = circuit.leaf;
+        for level in 0..TREE_DEPTH {
+            let fault = circuit
+                .fault
+                .filter(|(fault_level, _)| *fault_level == level)
+                .map(|(_, fault)| fault);
+            if matches!(fault, Some(Fault::Current)) {
+                current += Fr::ONE;
+            }
+            let sibling = circuit.siblings[level];
+            let bit = circuit.bits[level];
+            let mut left = current + bit * (sibling - current);
+            let mut right = sibling + bit * (current - sibling);
+            if matches!(fault, Some(Fault::Left)) {
+                left += Fr::ONE;
+            }
+            if matches!(fault, Some(Fault::Right)) {
+                right += Fr::ONE;
+            }
+            current = poseidon_hash([left, right]);
+        }
+        current
     }
 
     #[test]
-    fn merkle_gadget_accepts_real_native_path() {
-        let leaves = [Fp::from(5), Fp::from(7), Fp::from(11), Fp::from(13)];
-        let (leaf, siblings, path_bits, root) = native_witness(&leaves, 2);
-        let circuit = MerkleTestCircuit::new(leaf, siblings, path_bits);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root]]).unwrap();
-
-        prover.assert_satisfied();
+    fn forged_left_right_or_current_rejected_at_each_level_with_matching_root() {
+        let honest = circuit();
+        for level in 0..TREE_DEPTH {
+            for fault in [Fault::Current, Fault::Left, Fault::Right] {
+                let mut circuit = honest.clone();
+                circuit.fault = Some((level, fault));
+                circuit.root = forged_root(&circuit);
+                let failures = MockProver::run(10, &circuit, vec![vec![circuit.root]])
+                    .unwrap()
+                    .verify()
+                    .unwrap_err();
+                if matches!(fault, Fault::Current) {
+                    assert!(
+                        failures
+                            .iter()
+                            .all(|failure| matches!(failure, VerifyFailure::Permutation { .. })),
+                        "{failures:?}"
+                    );
+                } else {
+                    assert_eq!(failures.len(), 1, "{failures:?}");
+                    assert!(matches!(
+                        failures[0],
+                        VerifyFailure::ConstraintNotSatisfied { .. }
+                    ));
+                }
+            }
+        }
     }
 
     #[test]
-    fn merkle_gadget_rejects_wrong_sibling() {
-        let leaves = [Fp::from(5), Fp::from(7), Fp::from(11), Fp::from(13)];
-        let (leaf, mut siblings, path_bits, root) = native_witness(&leaves, 2);
-        siblings[0] += Fp::from(1);
-        let circuit = MerkleTestCircuit::new(leaf, siblings, path_bits);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root]]).unwrap();
-
-        assert!(prover.verify().is_err());
+    fn ordered_merkle_path_matches_native_tree() {
+        let circuit = circuit();
+        MockProver::run(10, &circuit, vec![vec![circuit.root]])
+            .unwrap()
+            .assert_satisfied();
     }
 
     #[test]
-    fn merkle_gadget_rejects_wrong_leaf() {
-        let leaves = [Fp::from(5), Fp::from(7), Fp::from(11), Fp::from(13)];
-        let (leaf, siblings, path_bits, root) = native_witness(&leaves, 2);
-        let circuit = MerkleTestCircuit::new(leaf + Fp::from(1), siblings, path_bits);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn merkle_gadget_rejects_flipped_path_bit() {
-        let leaves = [Fp::from(5), Fp::from(7), Fp::from(11), Fp::from(13)];
-        let (leaf, siblings, mut path_bits, root) = native_witness(&leaves, 2);
-        path_bits[0] = Fp::from(1) - path_bits[0];
-        let circuit = MerkleTestCircuit::new(leaf, siblings, path_bits);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn merkle_gadget_rejects_non_boolean_path_bit() {
-        let leaves = [Fp::from(5), Fp::from(5)];
-        let (leaf, siblings, mut path_bits, root) = native_witness(&leaves, 0);
-        path_bits[0] = Fp::from(2);
-        let circuit = MerkleTestCircuit::new(leaf, siblings, path_bits);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root]]).unwrap();
-
-        assert!(prover.verify().is_err());
+    fn empty_merkle_tree_matches_frozen_root() {
+        use halo2_proofs::halo2curves::ff::PrimeField;
+        let mut zero = Fr::ZERO;
+        let siblings = std::array::from_fn(|_| {
+            let sibling = zero;
+            zero = poseidon_hash([zero, zero]);
+            sibling
+        });
+        let root = Fr::from_str_vartime(
+            "21551820661461729022865262380882070649935529853313286572328683688269863701601",
+        )
+        .unwrap();
+        let circuit = PathCircuit {
+            leaf: Fr::ZERO,
+            siblings,
+            bits: [Fr::ZERO; TREE_DEPTH],
+            root,
+            fault: None,
+        };
+        MockProver::run(10, &circuit, vec![vec![root]])
+            .unwrap()
+            .assert_satisfied();
     }
 }

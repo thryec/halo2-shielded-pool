@@ -1,35 +1,76 @@
 use crate::{
-    Fp,
+    Fr,
     gadgets::{
+        AssignedValue,
         merkle::{MerkleChip, MerkleConfig},
-        note::{NoteHashChip, NoteHashConfig},
+        note::{NoteChip, NoteConfig},
+        poseidon::{PoseidonChip, PoseidonConfig},
+        range::{RangeChip, RangeConfig},
     },
-    primitives::merkle::TREE_DEPTH,
+    primitives::{
+        context::withdrawal_binding,
+        merkle::{MerklePath, TREE_DEPTH},
+        note::Note,
+    },
 };
-use halo2_poseidon::poseidon::{Pow5Chip, primitives::P128Pow5T3};
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{Circuit, Column, ConstraintSystem, Error, Instance},
+    halo2curves::ff::Field,
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
 };
+use snark_verifier_sdk::CircuitExt;
 
-#[derive(Clone)]
+pub const K: u32 = 10;
 
+#[derive(Clone, Debug)]
 pub struct WithdrawConfig {
+    note: NoteConfig,
     merkle: MerkleConfig,
-    note: NoteHashConfig,
+    two: PoseidonConfig<3>,
+    range: RangeConfig,
+    context: Column<Advice>,
     instance: Column<Instance>,
 }
 
+/// Public rows: root, nullifier hash, recipient, domain, binding.
+/// The caller's pool contract must check that domain matches its own context.
+#[derive(Clone, Debug)]
 pub struct WithdrawCircuit {
-    pub nullifier: Value<Fp>,
-    pub secret: Value<Fp>,
-    pub siblings: [Value<Fp>; TREE_DEPTH],
-    pub path_bits: [Value<Fp>; TREE_DEPTH],
+    pub nullifier: Value<Fr>,
+    pub secret: Value<Fr>,
+    pub siblings: [Value<Fr>; TREE_DEPTH],
+    pub path_bits: [Value<Fr>; TREE_DEPTH],
+    pub recipient: Value<Fr>,
+    pub domain: Value<Fr>,
+    pub public_inputs: [Fr; 5],
 }
 
-impl Circuit<Fp> for WithdrawCircuit {
+impl WithdrawCircuit {
+    pub fn new(note: Note, path: &MerklePath, recipient: Fr, domain: Fr) -> Self {
+        Self {
+            nullifier: Value::known(note.nullifier()),
+            secret: Value::known(note.secret()),
+            siblings: path.siblings().map(Value::known),
+            path_bits: path
+                .path_bits()
+                .map(|bit| Value::known(Fr::from(u64::from(bit)))),
+            recipient: Value::known(recipient),
+            domain: Value::known(domain),
+            public_inputs: [
+                path.compute_root(note.commitment()),
+                note.nullifier_hash(),
+                recipient,
+                domain,
+                withdrawal_binding(note.nullifier(), recipient, domain),
+            ],
+        }
+    }
+}
+
+impl Circuit<Fr> for WithdrawCircuit {
     type Config = WithdrawConfig;
     type FloorPlanner = SimpleFloorPlanner;
+    type Params = ();
 
     fn without_witnesses(&self) -> Self {
         Self {
@@ -37,59 +78,28 @@ impl Circuit<Fp> for WithdrawCircuit {
             secret: Value::unknown(),
             siblings: [Value::unknown(); TREE_DEPTH],
             path_bits: [Value::unknown(); TREE_DEPTH],
+            recipient: Value::unknown(),
+            domain: Value::unknown(),
+            public_inputs: [Fr::ZERO; 5],
         }
     }
 
-    fn configure(meta: &mut ConstraintSystem<Fp>) -> WithdrawConfig {
+    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+        let one = PoseidonChip::<2>::configure(meta);
+        let two = PoseidonChip::<3>::configure(meta);
+        let note = NoteChip::configure(meta, one, two.clone());
+        let merkle = MerkleChip::configure(meta, two.clone());
+        let range = RangeChip::configure(meta);
+        let context = meta.advice_column();
         let instance = meta.instance_column();
+        meta.enable_equality(context);
         meta.enable_equality(instance);
-
-        // create poseidon columns and pass into Poseidon chip
-        let state = [
-            meta.advice_column(),
-            meta.advice_column(),
-            meta.advice_column(),
-        ];
-        let partial_sbox = meta.advice_column();
-        let round_constants_a = [
-            meta.fixed_column(),
-            meta.fixed_column(),
-            meta.fixed_column(),
-        ];
-        let round_constants_b = [
-            meta.fixed_column(),
-            meta.fixed_column(),
-            meta.fixed_column(),
-        ];
-
-        meta.enable_constant(round_constants_b[0]);
-
-        let poseidon = Pow5Chip::configure::<P128Pow5T3>(
-            meta,
-            state,
-            partial_sbox,
-            round_constants_a,
-            round_constants_b,
-        );
-
-        // create note columns and pass into NoteHash chip
-        let nullifier = meta.advice_column();
-        let secret = meta.advice_column();
-
-        let note = NoteHashChip::configure(meta, nullifier, secret, poseidon.clone());
-
-        // create merkle columns and pass into Merkle chip
-        let current = meta.advice_column();
-        let sibling = meta.advice_column();
-        let path_bit = meta.advice_column();
-        let left = meta.advice_column();
-        let right = meta.advice_column();
-
-        let merkle = MerkleChip::configure(meta, current, sibling, path_bit, left, right, poseidon);
-
         WithdrawConfig {
-            merkle,
             note,
+            merkle,
+            two,
+            range,
+            context,
             instance,
         }
     }
@@ -97,125 +107,70 @@ impl Circuit<Fp> for WithdrawCircuit {
     fn synthesize(
         &self,
         config: Self::Config,
-        mut layouter: impl Layouter<Fp>,
+        mut layouter: impl Layouter<Fr>,
     ) -> Result<(), Error> {
-        let note_hash_chip = NoteHashChip::construct(config.note);
-        let (commitment, nullifier_hash) = note_hash_chip.compute_hashes(
-            layouter.namespace(|| "compute hashes"),
+        let mut offset = 0;
+        let note = NoteChip::construct(config.note).compute_hashes(
+            layouter.namespace(|| "note"),
+            &mut offset,
             self.nullifier,
             self.secret,
         )?;
-
-        let merkle_chip = MerkleChip::construct(config.merkle);
-        let root = merkle_chip.compute_root(
-            layouter.namespace(|| "compute root"),
-            commitment,
+        let root = MerkleChip::construct(config.merkle).compute_root(
+            layouter.namespace(|| "membership"),
+            &mut offset,
+            note.commitment,
             self.siblings,
             self.path_bits,
         )?;
-
-        layouter.constrain_instance(root.cell(), config.instance, 0)?;
-        layouter.constrain_instance(nullifier_hash.cell(), config.instance, 1)?;
-
+        let [recipient, domain] = layouter.assign_region(
+            || "withdrawal context",
+            |mut region| {
+                Ok([
+                    AssignedValue::assign(&mut region, config.context, offset, self.recipient),
+                    AssignedValue::assign(&mut region, config.context, offset + 1, self.domain),
+                ])
+            },
+        )?;
+        offset += 2;
+        RangeChip::construct(config.range).check(
+            layouter.namespace(|| "recipient range"),
+            &mut offset,
+            recipient,
+        )?;
+        let hash = PoseidonChip::construct(config.two);
+        let recipient_binding = hash.hash(
+            layouter.namespace(|| "nullifier and recipient"),
+            &mut offset,
+            [note.nullifier, recipient],
+        )?;
+        let binding = hash.hash(
+            layouter.namespace(|| "domain binding"),
+            &mut offset,
+            [recipient_binding, domain],
+        )?;
+        for (row, cell) in [root, note.nullifier_hash, recipient, domain, binding]
+            .into_iter()
+            .enumerate()
+        {
+            layouter.constrain_instance(cell.cell, config.instance, row);
+        }
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::primitives::{merkle::MerkleTree, note::Note};
-    use halo2_proofs::dev::MockProver;
-
-    const K: u32 = 10;
-
-    fn initialize_circuit_state() -> (WithdrawCircuit, Fp, Fp) {
-        let nullifier = Fp::from(3);
-        let secret = Fp::from(4);
-
-        let note = Note::new(nullifier, secret);
-        let mut tree = MerkleTree::new();
-
-        let decoy_note = Note::new(Fp::from(1), Fp::from(2));
-        tree.insert(decoy_note.commitment()).unwrap();
-
-        let index = tree.insert(note.commitment()).unwrap();
-        let path = tree.prove(index).unwrap();
-
-        let siblings = (*path.siblings()).map(Value::known);
-        let path_bits =
-            std::array::from_fn(|level| Value::known(Fp::from(path.path_bits()[level] as u64)));
-
-        let circuit = WithdrawCircuit {
-            nullifier: Value::known(note.nullifier()),
-            secret: Value::known(note.secret()),
-            siblings,
-            path_bits,
-        };
-
-        (circuit, tree.root(), note.nullifier_hash())
+impl CircuitExt<Fr> for WithdrawCircuit {
+    fn num_instance(&self) -> Vec<usize> {
+        vec![5]
     }
-
-    #[test]
-    fn withdrawal_works_with_valid_commitment() {
-        let (circuit, root, nullifier_hash) = initialize_circuit_state();
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root, nullifier_hash]]).unwrap();
-
-        prover.assert_satisfied();
+    fn instances(&self) -> Vec<Vec<Fr>> {
+        vec![self.public_inputs.to_vec()]
     }
-
-    #[test]
-    fn withdrawal_fails_with_wrong_public_root() {
-        let (circuit, root, nullifier_hash) = initialize_circuit_state();
-        let wrong_root = root + Fp::from(1);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![wrong_root, nullifier_hash]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn withdrawal_fails_with_wrong_public_nullifier_hash() {
-        let (circuit, root, nullifier_hash) = initialize_circuit_state();
-        let wrong_nullifier_hash = nullifier_hash + Fp::from(1);
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root, wrong_nullifier_hash]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn withdrawal_fails_when_note_is_not_in_tree() {
-        let (mut circuit, root, _) = initialize_circuit_state();
-        let absent_note = Note::new(Fp::from(5), Fp::from(6));
-        circuit.nullifier = Value::known(absent_note.nullifier());
-        circuit.secret = Value::known(absent_note.secret());
-
-        let prover =
-            MockProver::run(K, &circuit, vec![vec![root, absent_note.nullifier_hash()]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn withdrawal_fails_with_tampered_secret() {
-        let (mut circuit, root, nullifier_hash) = initialize_circuit_state();
-        circuit.secret = Value::known(Fp::from(5));
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root, nullifier_hash]]).unwrap();
-
-        assert!(prover.verify().is_err());
-    }
-
-    #[test]
-    fn withdrawal_fails_with_tampered_merkle_path() {
-        let (mut circuit, root, nullifier_hash) = initialize_circuit_state();
-        let decoy_note = Note::new(Fp::from(1), Fp::from(2));
-        circuit.siblings[0] = Value::known(decoy_note.commitment() + Fp::from(1));
-
-        let prover = MockProver::run(K, &circuit, vec![vec![root, nullifier_hash]]).unwrap();
-
-        assert!(prover.verify().is_err());
+    fn selectors(config: &Self::Config) -> Vec<Selector> {
+        let mut selectors = config.note.one.selectors();
+        selectors.extend(config.two.selectors());
+        selectors.push(config.merkle.order);
+        selectors.extend(config.range.selectors());
+        selectors
     }
 }

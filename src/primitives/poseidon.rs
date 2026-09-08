@@ -1,49 +1,79 @@
-use halo2_poseidon::poseidon::primitives::{
-    ConstantLength, Hash as NativePoseidonHash, P128Pow5T3,
-};
+//! Circom-compatible BN254 Poseidon with zero domain state and x^5 S-boxes.
+//! One input uses width 2 and 8/56 rounds. Two inputs use width 3 and 8/57.
+//! light-poseidon 0.4.0 supplies both the parameters and native reference hash.
 
-use crate::Fp;
+use crate::Fr;
+use ark_bn254::Fr as ArkFr;
+use ark_ff::{BigInteger, PrimeField as ArkPrimeField};
+use halo2_proofs::halo2curves::ff::PrimeField;
+use light_poseidon::{Poseidon, PoseidonHasher, parameters::bn254_x5};
 
-pub const MESSAGE_LEN: usize = 2;
-pub const POSEIDON_WIDTH: usize = 3;
-pub const POSEIDON_RATE: usize = 2;
-
-/// Computes a Poseidon hash outside the circuit.
-///
-/// `L` is fixed at compile time by the `[Fp; L]` input. `ConstantLength<L>`
-/// includes that length in Poseidon's domain, so different input lengths are
-/// domain-separated even when their padded states would otherwise match.
-pub fn poseidon_hash<const L: usize>(message: [Fp; L]) -> Fp {
-    NativePoseidonHash::<Fp, P128Pow5T3, ConstantLength<L>, 3, 2>::init().hash(message)
+/// Constants are round-major. MDS rows select outputs, and columns select inputs.
+#[derive(Clone, Debug)]
+pub struct PoseidonSpec {
+    pub width: usize,
+    pub full_rounds: usize,
+    pub partial_rounds: usize,
+    pub round_constants: Vec<Vec<Fr>>,
+    pub mds: Vec<Vec<Fr>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn to_halo2(value: ArkFr) -> Fr {
+    let bytes = value.into_bigint().to_bytes_le();
+    let mut repr = <Fr as PrimeField>::Repr::default();
+    repr.as_mut().copy_from_slice(&bytes);
+    Option::<Fr>::from(Fr::from_repr(repr)).expect("BN254 scalar fields share a modulus")
+}
 
-    #[test]
-    fn hash_is_deterministic() {
-        let message = [Fp::from(1), Fp::from(2)];
+fn to_ark(value: Fr) -> ArkFr {
+    ArkFr::from_le_bytes_mod_order(value.to_repr().as_ref())
+}
 
-        assert_eq!(poseidon_hash(message), poseidon_hash(message));
+fn check_arity(arity: usize) {
+    assert!(
+        matches!(arity, 1 | 2),
+        "Poseidon supports only one or two inputs"
+    );
+}
+
+pub fn parameters(arity: usize) -> PoseidonSpec {
+    check_arity(arity);
+    let width = arity + 1;
+    let params = bn254_x5::get_poseidon_parameters::<ArkFr>(width as u8)
+        .expect("selected BN254 Poseidon parameters exist");
+    assert_eq!(params.width, width);
+    assert_eq!(params.alpha, 5);
+    assert_eq!(params.full_rounds, 8);
+    assert_eq!(params.partial_rounds, if arity == 1 { 56 } else { 57 });
+    assert_eq!(
+        params.ark.len(),
+        width * (params.full_rounds + params.partial_rounds)
+    );
+    PoseidonSpec {
+        width,
+        full_rounds: params.full_rounds,
+        partial_rounds: params.partial_rounds,
+        round_constants: params
+            .ark
+            .chunks_exact(width)
+            .map(|row| row.iter().copied().map(to_halo2).collect())
+            .collect(),
+        mds: params
+            .mds
+            .into_iter()
+            .map(|row| row.into_iter().map(to_halo2).collect())
+            .collect(),
     }
+}
 
-    #[test]
-    fn different_lengths_produce_different_hashes() {
-        let message1 = [Fp::from(1)];
-        let message2 = [Fp::from(1), Fp::from(2)];
-
-        let hash1 = poseidon_hash(message1);
-        let hash2 = poseidon_hash(message2);
-
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
-    fn hash_depends_on_input_order() {
-        assert_ne!(
-            poseidon_hash([Fp::from(1), Fp::from(2)]),
-            poseidon_hash([Fp::from(2), Fp::from(1)]),
-        );
-    }
+/// Hashes one or two fields. Other arities are outside this protocol.
+pub fn poseidon_hash<const L: usize>(inputs: [Fr; L]) -> Fr {
+    check_arity(L);
+    let mut hasher =
+        Poseidon::<ArkFr>::new_circom(L).expect("selected BN254 Poseidon parameters exist");
+    to_halo2(
+        hasher
+            .hash(&inputs.map(to_ark))
+            .expect("arity matches parameters"),
+    )
 }
