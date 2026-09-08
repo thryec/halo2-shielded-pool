@@ -13,9 +13,9 @@ concurrency:
 
 jobs:
   checks:
-    name: Format, lint, and test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Verify Rust and EVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -26,11 +26,50 @@ jobs:
         with:
           rustflags: ""
 
+      - name: Read Foundry pin
+        id: foundry
+        run: |
+          read -r version < .foundry-version
+          echo "version=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: ${{ steps.foundry.outputs.version }}
+          cache: false
+
+      - name: Check installed Forge version
+        run: |
+          read -r required_forge < .foundry-version
+          forge_version=$(forge --version)
+          forge_version=${forge_version%%$'\n'*}
+          case "$forge_version" in
+            "forge Version: $required_forge"|"forge Version: $required_forge-v$required_forge") ;;
+            *)
+              printf 'Forge %s required; got %s\n' "$required_forge" "$forge_version" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      - name: Check for one Halo2 backend
+        run: |
+          cargo metadata --locked --format-version 1 | jq -e \
+            '[.packages[] | select(.name == "halo2-axiom" or .name == "halo2_proofs")] | length == 1'
+
       - name: Run tests
         run: cargo test --locked --all-targets
+
+      - name: Run release tests
+        run: cargo test --locked --release
+
+      - name: Generate matching proof and Solidity verifier
+        run: cargo run --locked --release
+
+      - name: Test Solidity hashes and withdrawal proof
+        run: forge test -vv
