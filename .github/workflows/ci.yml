@@ -73,3 +73,6 @@ jobs:
 
       - name: Test Solidity hashes and withdrawal proof
         run: forge test -vv
+
+      - name: Run fixed-pool flow on Anvil
+        run: cargo test --locked --release --test anvil_e2e -- --ignored --nocapture
