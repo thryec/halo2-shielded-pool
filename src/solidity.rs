@@ -8,6 +8,7 @@ fn packed(values: impl Iterator<Item = Fr>) -> String {
         .map(|value| {
             let mut bytes = value.to_repr();
             bytes.reverse();
+
             hex::encode(bytes)
         })
         .collect()
@@ -19,8 +20,10 @@ pub fn poseidon_source(arity: usize) -> String {
     let rounds = spec.full_rounds + spec.partial_rounds;
     let half = spec.full_rounds / 2;
     let partial_end = half + spec.partial_rounds;
+
     let constants = packed(spec.round_constants.iter().flatten().copied());
     let mds = packed(spec.mds.iter().flatten().copied());
+
     let (args, check, initial) = match arity {
         1 => ("uint256 value", "value < P", "[uint256(0), value]"),
         2 => (
@@ -30,6 +33,7 @@ pub fn poseidon_source(arity: usize) -> String {
         ),
         _ => unreachable!("parameters rejects unsupported arity"),
     };
+
     format!(
         r#"// SPDX-License-Identifier: Apache-2.0
 // Constants: light-poseidon 0.4.0, Copyright 2023 Light Protocol Labs
@@ -74,5 +78,18 @@ contract Poseidon{arity} {{
 }}
 "#,
         partial = spec.partial_rounds
+    )
+}
+
+pub fn verification_key_source(id: [u8; 32]) -> String {
+    format!(
+        r#"// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+library VerificationKey {{
+    bytes32 internal constant ID = 0x{};
+}}
+"#,
+        hex::encode(id)
     )
 }
