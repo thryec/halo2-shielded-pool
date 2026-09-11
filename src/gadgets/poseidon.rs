@@ -47,20 +47,27 @@ impl<const W: usize> PoseidonChip<W> {
             matches!(W, 2 | 3),
             "only widths two and three are supported"
         );
+
         // Axiom otherwise caps its inferred degree at five. q * x^5 needs six.
         meta.set_minimum_degree(6);
+
         let state = std::array::from_fn(|_| meta.advice_column());
         let constants = std::array::from_fn(|_| meta.fixed_column());
+
         for column in state {
             meta.enable_equality(column);
         }
+
         let initial = meta.selector();
         let full = meta.selector();
         let partial = meta.selector();
+
         meta.create_gate("zero Poseidon capacity", |meta| {
             vec![meta.query_selector(initial) * meta.query_advice(state[0], Rotation::cur())]
         });
+
         let spec = parameters(W - 1);
+
         for (name, selector, is_full) in [
             ("Poseidon full round", full, true),
             ("Poseidon partial round", partial, false),
@@ -87,6 +94,7 @@ impl<const W: usize> PoseidonChip<W> {
                     .collect::<Vec<_>>()
             });
         }
+
         PoseidonConfig {
             state,
             constants,
@@ -103,15 +111,19 @@ impl<const W: usize> PoseidonChip<W> {
         inputs: [AssignedValue; L],
     ) -> Result<AssignedValue, Error> {
         assert_eq!(L + 1, W, "input count must match Poseidon width");
+
         let config = &self.config;
         let spec = parameters(L);
+
         // Axiom's SimpleFloorPlanner uses absolute rows across all regions.
         let start = *offset;
         *offset += spec.round_constants.len() + 1;
+
         layouter.assign_region(
             || "Poseidon permutation",
             |mut region| {
                 config.initial.enable(&mut region, start)?;
+
                 let mut state: [Value<Fr>; W] = std::array::from_fn(|word| {
                     if word == 0 {
                         Value::known(Fr::ZERO)
@@ -119,10 +131,12 @@ impl<const W: usize> PoseidonChip<W> {
                         inputs[word - 1].value
                     }
                 });
+
                 #[cfg(test)]
                 if let Some(trace) = &self.trace_override {
                     state = std::array::from_fn(|word| Value::known(trace[0][word]));
                 }
+
                 for (word, value) in state.iter().enumerate() {
                     let cell =
                         AssignedValue::assign(&mut region, config.state[word], start, *value);
@@ -130,12 +144,16 @@ impl<const W: usize> PoseidonChip<W> {
                         region.constrain_equal(cell.cell, inputs[word - 1].cell);
                     }
                 }
+
                 let mut digest = None;
+
                 for (round, constants) in spec.round_constants.iter().enumerate() {
                     let full = !(spec.full_rounds / 2..spec.full_rounds / 2 + spec.partial_rounds)
                         .contains(&round);
+
                     if full { config.full } else { config.partial }
                         .enable(&mut region, start + round)?;
+
                     for (word, constant) in constants.iter().enumerate() {
                         region.assign_fixed(config.constants[word], start + round, *constant);
                         state[word] = state[word].map(|value| {
@@ -147,15 +165,18 @@ impl<const W: usize> PoseidonChip<W> {
                             }
                         });
                     }
+
                     state = std::array::from_fn(|word| {
                         (0..W).fold(Value::known(Fr::ZERO), |sum, input| {
                             sum + state[input] * Value::known(spec.mds[word][input])
                         })
                     });
+
                     #[cfg(test)]
                     if let Some(trace) = &self.trace_override {
                         state = std::array::from_fn(|word| Value::known(trace[round + 1][word]));
                     }
+
                     for (word, value) in state.iter().enumerate() {
                         let cell = AssignedValue::assign(
                             &mut region,
@@ -168,6 +189,7 @@ impl<const W: usize> PoseidonChip<W> {
                         }
                     }
                 }
+
                 Ok(digest.expect("selected Poseidon has at least one round"))
             },
         )
@@ -226,11 +248,15 @@ mod tests {
                     }))
                 },
             )?;
+
             let mut chip = PoseidonChip::construct(config.0);
             chip.trace_override = self.trace.clone();
+
             let mut offset = L;
             let digest = chip.hash(layouter.namespace(|| "hash"), &mut offset, inputs)?;
+
             layouter.constrain_instance(digest.cell, config.2, 0);
+
             Ok(())
         }
     }
@@ -248,12 +274,16 @@ mod tests {
         let spec = parameters(L);
         let mut state = vec![Fr::ZERO];
         state.extend(inputs);
+
         let mut trace = Vec::new();
+
         for offset in 0..=spec.round_constants.len() {
             if offset == row {
                 state[word] += Fr::ONE;
             }
+
             trace.push(state.clone());
+
             if let Some(constants) = spec.round_constants.get(offset) {
                 let full = !(spec.full_rounds / 2..spec.full_rounds / 2 + spec.partial_rounds)
                     .contains(&offset);
@@ -263,6 +293,7 @@ mod tests {
                         state[index] = state[index].square().square() * state[index];
                     }
                 }
+
                 state = spec
                     .mds
                     .iter()
@@ -270,6 +301,7 @@ mod tests {
                     .collect();
             }
         }
+
         HashCircuit {
             inputs,
             digest: trace.last().unwrap()[0],
@@ -284,6 +316,7 @@ mod tests {
             failures[0],
             VerifyFailure::ConstraintNotSatisfied { .. }
         ));
+
         for word in 1..W {
             let failures = check(&forged::<W, L>(0, word)).unwrap_err();
             assert!(
@@ -293,6 +326,7 @@ mod tests {
                 "input copy: {failures:?}"
             );
         }
+
         for row in [2, 5, parameters(L).round_constants.len()] {
             for word in 0..W {
                 let failures = check(&forged::<W, L>(row, word)).unwrap_err();
@@ -326,7 +360,9 @@ mod tests {
             .unwrap(),
             trace: None,
         };
+
         check(&one).unwrap();
+
         let two = HashCircuit::<3, 2> {
             inputs: [Fr::ONE, Fr::from(2)],
             digest: Fr::from_str_vartime(
@@ -335,6 +371,7 @@ mod tests {
             .unwrap(),
             trace: None,
         };
+
         check(&two).unwrap();
     }
 }

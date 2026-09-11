@@ -18,6 +18,7 @@ fn small_be_field(bytes: &[u8]) -> Fr {
     for (target, byte) in repr.as_mut().iter_mut().zip(bytes.iter().rev()) {
         *target = *byte;
     }
+
     Option::<Fr>::from(Fr::from_repr(repr)).expect("160-bit values fit the BN254 scalar field")
 }
 
@@ -33,8 +34,10 @@ impl ProtocolDomain {
             small_be_field(&self.chain_id[16..]),
             small_be_field(&self.chain_id[..16]),
         ]);
+
         let deployment = poseidon_hash([address_field(self.pool), address_field(self.asset)]);
         let body = poseidon_hash([poseidon_hash([chain, deployment]), Fr::from(self.version)]);
+
         poseidon_hash([Fr::from(0x485350), body])
     }
 }
